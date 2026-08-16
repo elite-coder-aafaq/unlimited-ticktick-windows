@@ -28,11 +28,56 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Download TickTick Setup
+      - name: Download TickTick File
         shell: pwsh
         run: |
           Write-Host "Downloading target file from ${{ inputs.app_url }}..."
-          Invoke-WebRequest -Uri "${{ inputs.app_url }}" -OutFile "TickTick.exe"
+          Invoke-WebRequest -Uri "${{ inputs.app_url }}" -OutFile "TickTick_Input.bin"
+
+      - name: Prepare Patch Target
+        shell: pwsh
+        run: |
+          function Test-ManagedAssembly([string] $Path) {
+            try {
+              [System.Reflection.AssemblyName]::GetAssemblyName($Path) | Out-Null
+              return $true
+            } catch {
+              return $false
+            }
+          }
+
+          if (Test-ManagedAssembly "TickTick_Input.bin") {
+            Copy-Item "TickTick_Input.bin" "TickTick.exe" -Force
+            Write-Host "Using downloaded file directly as TickTick.exe."
+            exit 0
+          }
+
+          if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
+            Write-Error "Downloaded file is not a managed .NET assembly and 7z is unavailable to extract installer contents."
+            exit 1
+          }
+
+          $extractPath = Join-Path $PWD "TickTick_Extracted"
+          New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+          7z x "TickTick_Input.bin" "-o$extractPath" -y | Out-Host
+
+          $candidate = Get-ChildItem -Path $extractPath -Recurse -File |
+            Where-Object { $_.Name -ieq "TickTick.exe" -and (Test-ManagedAssembly $_.FullName) } |
+            Select-Object -First 1
+
+          if (-not $candidate) {
+            $candidate = Get-ChildItem -Path $extractPath -Recurse -File |
+              Where-Object { $_.Extension -ieq ".exe" -and (Test-ManagedAssembly $_.FullName) } |
+              Select-Object -First 1
+          }
+
+          if (-not $candidate) {
+            Write-Error "Could not find a managed TickTick executable. Provide the installed TickTick.exe file (not the installer) or a direct archive containing it."
+            exit 1
+          }
+
+          Copy-Item $candidate.FullName "TickTick.exe" -Force
+          Write-Host "Prepared managed executable from installer/archive: $($candidate.FullName)"
 
       - name: Run Patcher
         # We can just build and run directly via dotnet run
